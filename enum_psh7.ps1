@@ -1,11 +1,11 @@
-# Server Connectivity Scan - Full Script (Fixed Port Status Display)
+# Server Connectivity Scan - Fixed OS Name Display + All Ports + WinRM Data
 # Requires PowerShell 7+ and Active Directory module
 
 Import-Module ActiveDirectory
 
 Write-Host "Querying Active Directory for servers..." -ForegroundColor Yellow
 
-# Phase 1: Get servers and materialize properties
+# Phase 1: Get servers and FORCE reliable materialization of OS name/version
 $serverObjects = Get-ADComputer -Filter 'OperatingSystem -like "*Server*"' -Properties DNSHostName, Name, OperatingSystem, OperatingSystemVersion |
     Select-Object @{
         Name       = 'DNSHostName'
@@ -15,10 +15,16 @@ $serverObjects = Get-ADComputer -Filter 'OperatingSystem -like "*Server*"' -Prop
         Expression = { $_.Name }
     }, @{
         Name       = 'OSName'
-        Expression = { $_.OperatingSystem ?? "Unknown" }
+        Expression = { 
+            if ($_.OperatingSystem) { $_.OperatingSystem.ToString().Trim() } 
+            else { "Unknown" } 
+        }
     }, @{
         Name       = 'OSVersion'
-        Expression = { $_.OperatingSystemVersion ?? "Unknown" }
+        Expression = { 
+            if ($_.OperatingSystemVersion) { $_.OperatingSystemVersion.ToString().Trim() } 
+            else { "Unknown" } 
+        }
     }
 
 $scanDate = Get-Date
@@ -104,7 +110,6 @@ $reachableList | ForEach-Object -Parallel {
         [pscustomobject]@{ Property = $p.Property; Open = $result.TcpTestSucceeded }
     } -ThrottleLimit 20
 
-    # Initialize all port properties explicitly to $false first
     $obj = [pscustomobject]@{
         ScanDate            = $scanDate
         Server              = $server
@@ -127,19 +132,9 @@ $reachableList | ForEach-Object -Parallel {
         UptimeDays          = $null
     }
 
-    # Explicitly set each port status from results
-    foreach ($pr in $portResults) {
-        switch ($pr.Property) {
-            'RDP'         { $obj.RDP         = $pr.Open }
-            'HTTP'        { $obj.HTTP        = $pr.Open }
-            'HTTPS'       { $obj.HTTPS       = $pr.Open }
-            'FTP'         { $obj.FTP         = $pr.Open }
-            'SSH'         { $obj.SSH         = $pr.Open }
-            'LDAP'        { $obj.LDAP        = $pr.Open }
-            'LDAPS'       { $obj.LDAPS       = $pr.Open }
-            'Kerberos'    { $obj.Kerberos    = $pr.Open }
-            # WinRM_Port handled separately below
-        }
+    # Apply all standard port results dynamically
+    $portResults | Where-Object Property -ne 'WinRM_Port' | ForEach-Object {
+        $obj.($_.Property) = $_.Open
     }
 
     # WMI
@@ -155,8 +150,7 @@ $reachableList | ForEach-Object -Parallel {
         $obj.WinRM = $true
         $winrmWorks = $true
     } catch {
-        $winrmPortOpen = ($portResults | Where-Object Property -eq 'WinRM_Port').Open
-        if ($winrmPortOpen) {
+        if (($portResults | Where-Object Property -eq 'WinRM_Port').Open) {
             $obj.WinRM = "PortOpenOnly"
         }
     }
@@ -188,7 +182,7 @@ $reachableList | ForEach-Object -Parallel {
     $bag.Add($obj)
 } -ThrottleLimit 50
 
-# Output
+# Final results
 $finalResults = $finalReport.ToArray() | Sort-Object Server
 
 $finalResults | Format-Table -AutoSize

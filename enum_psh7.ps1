@@ -1,11 +1,11 @@
-# Server Connectivity Scan - Fixed OS Name Display + All Ports + WinRM Data
+# Server Connectivity Scan - FINAL FIXED VERSION (All Ports Show Correctly)
 # Requires PowerShell 7+ and Active Directory module
 
 Import-Module ActiveDirectory
 
 Write-Host "Querying Active Directory for servers..." -ForegroundColor Yellow
 
-# Phase 1: Get servers and FORCE reliable materialization of OS name/version
+# Phase 1: Materialize OS properties reliably
 $serverObjects = Get-ADComputer -Filter 'OperatingSystem -like "*Server*"' -Properties DNSHostName, Name, OperatingSystem, OperatingSystemVersion |
     Select-Object @{
         Name       = 'DNSHostName'
@@ -32,7 +32,7 @@ $reachableServers = [System.Collections.Concurrent.ConcurrentBag[psobject]]::new
 
 Write-Host "Phase 1: Testing DNS + ICMP reachability..." -ForegroundColor Yellow
 
-# Phase 1: Robust reachability
+# Phase 1: Reachability
 $serverObjects | ForEach-Object -Parallel {
     $srv = $_
     $bag = $using:reachableServers
@@ -81,7 +81,7 @@ if ($reachableList.Count -eq 0) {
     return
 }
 
-# Phase 2: Full checks
+# Phase 2: Full enrichment
 $finalReport = [System.Collections.Concurrent.ConcurrentBag[psobject]]::new()
 
 Write-Host "Phase 2: Checking ports, services, and WinRM data..." -ForegroundColor Yellow
@@ -110,31 +110,24 @@ $reachableList | ForEach-Object -Parallel {
         [pscustomobject]@{ Property = $p.Property; Open = $result.TcpTestSucceeded }
     } -ThrottleLimit 20
 
+    # Start with base properties only (NO port properties yet)
     $obj = [pscustomobject]@{
-        ScanDate            = $scanDate
-        Server              = $server
-        IPAddress           = $entry.IPAddress
-        OperatingSystem     = $entry.OperatingSystem
-        OSVersion           = $entry.OSVersion
-        Online              = $true
-        WMI                 = $false
-        WinRM               = $false
-        RPC_over_SMB        = $false
-        RDP                 = $false
-        HTTP                = $false
-        HTTPS               = $false
-        FTP                 = $false
-        SSH                 = $false
-        LDAP                = $false
-        LDAPS               = $false
-        Kerberos            = $false
-        InstallDate         = $null
-        UptimeDays          = $null
+        ScanDate        = $scanDate
+        Server          = $server
+        IPAddress       = $entry.IPAddress
+        OperatingSystem = $entry.OperatingSystem
+        OSVersion       = $entry.OSVersion
+        Online          = $true
+        WMI             = $false
+        WinRM           = $false
+        RPC_over_SMB    = $false
+        InstallDate     = $null
+        UptimeDays      = $null
     }
 
-    # Apply all standard port results dynamically
+    # Dynamically ADD and set all standard port properties
     $portResults | Where-Object Property -ne 'WinRM_Port' | ForEach-Object {
-        $obj.($_.Property) = $_.Open
+        $obj | Add-Member -MemberType NoteProperty -Name $_.Property -Value $_.Open -Force
     }
 
     # WMI
@@ -143,7 +136,7 @@ $reachableList | ForEach-Object -Parallel {
         $obj.WMI = $true
     } catch { }
 
-    # WinRM + extra data
+    # WinRM
     $winrmWorks = $false
     try {
         Test-WSMan -ComputerName $server -ErrorAction Stop | Out-Null
@@ -155,6 +148,7 @@ $reachableList | ForEach-Object -Parallel {
         }
     }
 
+    # WinRM extra data
     if ($winrmWorks) {
         try {
             $osInfo = Invoke-Command -ComputerName $server -ScriptBlock {
@@ -185,6 +179,7 @@ $reachableList | ForEach-Object -Parallel {
 # Final results
 $finalResults = $finalReport.ToArray() | Sort-Object Server
 
+# Display all columns including ports
 $finalResults | Format-Table -AutoSize
 
 $csvPath = "ServerConnectivityReport_$(Get-Date -Format 'yyyyMMdd_HHmm').csv"
